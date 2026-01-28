@@ -37,7 +37,6 @@ function shuffle(a) {
 
 // ---- Game state (single shared lobby) ----
 const STARTING_CHIPS = 1000;
-const ROUND_TIME_MS = 15000;
 const PAIR_MULT = 11;
 
 const state = {
@@ -47,13 +46,10 @@ const state = {
   card1: null,
   card2: null,
   card3: null,
-  betDeadline: null,
-  players: new Map(),
+  players: new Map(), // id -> {id,name,chips,bet,connected,lastDelta,ws}
   lastRound: null,
   config: { pairRule: true }
 };
-
-let revealTimer = null;
 
 function ensureDeck(n = 3) {
   if (state.deck.length < n) state.deck = shuffle(makeDeck());
@@ -70,7 +66,6 @@ function publicState() {
     card1: state.card1,
     card2: state.card2,
     card3: state.card3,
-    betDeadline: state.betDeadline,
     config: state.config,
     players: Array.from(state.players.values()).map(p => ({
       id: p.id,
@@ -110,18 +105,12 @@ function newHand() {
   state.card2 = drawCard();
   state.card3 = null;
   state.phase = "betting";
-  state.betDeadline = Date.now() + ROUND_TIME_MS;
   state.lastRound = null;
 
   for (const p of state.players.values()) {
     p.bet = 0;
     p.lastDelta = 0;
   }
-
-  if (revealTimer) clearTimeout(revealTimer);
-  revealTimer = setTimeout(() => {
-    if (state.phase === "betting") reveal();
-  }, ROUND_TIME_MS + 50);
 }
 
 function reveal() {
@@ -129,7 +118,6 @@ function reveal() {
 
   state.card3 = drawCard();
   state.phase = "revealed";
-  state.betDeadline = null;
 
   const outcomes = {};
   const v1 = state.card1.value;
@@ -170,7 +158,7 @@ function reveal() {
   state.lastRound = { outcomes };
 }
 
-// ---- HTTP server: SERVE THE UI ----
+// ---- HTTP server: serve UI ----
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -251,7 +239,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "host_new_hand") {
       if (!isHost(id)) return;
-      if (state.phase === "betting") return;
+      if (state.phase === "betting") return; // keep manual fairness: don't wipe bets mid-round
       newHand();
       broadcast();
       return;
