@@ -1,9 +1,6 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#0b1220">
-<link rel="apple-touch-icon" href="/icon-192.png">
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>In-Between Multiplayer</title>
@@ -11,8 +8,8 @@
     :root{
       --bg0:#0b1220; --panel: rgba(255,255,255,.06); --stroke: rgba(255,255,255,.14);
       --text: rgba(255,255,255,.92); --muted: rgba(255,255,255,.65);
-      --good:#5CFF9D; --bad:#FF5C7A; --warn:#FFD66B; --btn:#1b2a4b; --btn2:#24365f;
-      --card:#f7f7fb; --cardStroke:#d8d8e6; --shadow: 0 18px 55px rgba(0,0,0,.55);
+      --btn:#1b2a4b; --btn2:#24365f; --card:#f7f7fb; --cardStroke:#d8d8e6;
+      --shadow: 0 18px 55px rgba(0,0,0,.55);
     }
     *{ box-sizing:border-box; }
     html,body{
@@ -70,9 +67,6 @@
       background: rgba(255,255,255,.05); min-height: 54px;
       display:flex; align-items:center; gap: 10px; font-weight: 900; letter-spacing: .1px;
     }
-    .msg.good{ border-color: rgba(92,255,157,.35); }
-    .msg.bad{ border-color: rgba(255,92,122,.35); }
-    .msg.warn{ border-color: rgba(255,214,107,.35); }
     .cardsRow{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items:center; }
     .slot{ display:grid; justify-items:center; gap:8px; }
     .slotLabel{ color: rgba(255,255,255,.6); font-size: 12px; }
@@ -108,15 +102,13 @@
 <div class="wrap">
   <header>
     <div>
-      <div class="title">In-Between Multiplayer (Single Public Table)</div>
-      <div class="sub">Share this page link • everyone joins the same table automatically</div>
+      <div class="title">In-Between Multiplayer (Manual)</div>
+      <div class="sub">No timer • Host controls when to deal & reveal</div>
     </div>
     <div class="pill">
       Status: <b id="status">Connecting…</b>
       <span style="opacity:.55">|</span>
       Deck: <b id="deckCount">—</b>
-      <span style="opacity:.55">|</span>
-      Timer: <b id="timer">—</b>
     </div>
   </header>
 
@@ -125,7 +117,7 @@
       <div class="hd">
         <div class="left">
           <div class="kicker">TABLE</div>
-          <div class="big">Host deals → everyone bets → auto reveal</div>
+          <div class="big">Host deals → everyone bets → host reveals</div>
         </div>
         <div class="pill">
           Pair rule: <b id="pairRuleOut">—</b>
@@ -157,7 +149,7 @@
         </div>
 
         <div style="height:12px"></div>
-        <div class="msg warn" id="msg">Connecting…</div>
+        <div class="msg" id="msg">Connecting…</div>
         <div style="height:12px"></div>
 
         <div class="row">
@@ -174,7 +166,7 @@
         <div class="row" style="justify-content:space-between;">
           <div class="row">
             <button class="btn" id="hostNewHand" disabled>Host: New Hand</button>
-            <button class="btn secondary" id="hostReveal" disabled>Host: Reveal Now</button>
+            <button class="btn secondary" id="hostReveal" disabled>Host: Reveal</button>
           </div>
           <div class="row" style="min-width:320px;">
             <div>
@@ -188,7 +180,7 @@
 
         <div style="height:8px"></div>
         <div class="tiny">
-          Rule: third card must be <b>strictly between</b> the first two. Pair pays 11× if enabled.
+          Rule: 3rd card must be <b>strictly between</b> the first two. Pair pays 11× if enabled.
         </div>
       </div>
     </section>
@@ -214,7 +206,6 @@
 
   const statusEl = el("status");
   const deckEl = el("deckCount");
-  const timerEl = el("timer");
   const msgEl = el("msg");
 
   const nameEl = el("name");
@@ -238,18 +229,13 @@
 
   let ws = null;
   let you = null;
-  let timerInterval = null;
 
-  function setMsg(kind, text){
-    msgEl.classList.remove("good","bad","warn");
-    msgEl.classList.add(kind);
-    msgEl.textContent = text;
+  function setMsg(text){ msgEl.textContent = text; }
+
+  function wsUrlFromLocation(){
+    const proto = (location.protocol === "https:") ? "wss:" : "ws:";
+    return proto + "//" + location.host;
   }
-
- const SERVER_HTTP = "https://in-between-card-game-agzb.onrender.com";
-function wsUrlFromLocation() {
-  return "wss://in-between-card-game-agzb.onrender.com";
-}
 
   function send(obj){
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -267,15 +253,7 @@ function wsUrlFromLocation() {
       </div>
     `;
   }
-  function flip(cardEl, up){
-    cardEl.classList.toggle("isUp", !!up);
-  }
-  function updateTimer(deadline){
-    if (!deadline) { timerEl.textContent = "—"; return; }
-    const ms = deadline - Date.now();
-    const s = Math.max(0, Math.ceil(ms / 1000));
-    timerEl.textContent = s + "s";
-  }
+  function flip(cardEl, up){ cardEl.classList.toggle("isUp", !!up); }
 
   function render(state){
     statusEl.textContent = "Connected";
@@ -305,10 +283,6 @@ function wsUrlFromLocation() {
 
     hostNewHandBtn.disabled = !(isHost && state.phase !== "betting");
     hostRevealBtn.disabled = !(isHost && state.phase === "betting");
-
-    if (timerInterval) clearInterval(timerInterval);
-    updateTimer(state.betDeadline);
-    timerInterval = setInterval(() => updateTimer(state.betDeadline), 250);
 
     playersList.innerHTML = "";
     (state.players || []).forEach(p => {
@@ -341,13 +315,13 @@ function wsUrlFromLocation() {
       playersList.appendChild(row);
     });
 
-    if (state.phase === "idle") setMsg("warn", "Waiting for host to start a new hand.");
-    else if (state.phase === "betting") setMsg("warn", "Betting open. Place your bet. Auto-reveal when timer hits 0.");
-    else setMsg("warn", "Round revealed. Host can start next hand.");
+    if (state.phase === "idle") setMsg("Waiting for host to start a new hand.");
+    else if (state.phase === "betting") setMsg("Betting is open. Place/change your bet until host reveals.");
+    else setMsg("Round revealed. Host can start the next hand.");
   }
 
   function connect(){
-    setMsg("warn", "Connecting…");
+    setMsg("Connecting…");
     statusEl.textContent = "Connecting…";
 
     try { if (ws) ws.close(); } catch {}
@@ -356,7 +330,7 @@ function wsUrlFromLocation() {
 
     ws.onopen = () => {
       statusEl.textContent = "Connected";
-      setMsg("good", "Connected. Syncing…");
+      setMsg("Connected. Syncing…");
       const nm = (localStorage.getItem("ib_name") || nameEl.value || "Novemm").trim().slice(0,18);
       if (nm) send({ type:"set_name", name: nm });
     };
@@ -370,11 +344,10 @@ function wsUrlFromLocation() {
 
     ws.onclose = () => {
       statusEl.textContent = "Disconnected";
-      setMsg("bad", "Disconnected. Refresh to reconnect.");
-      if (timerInterval) clearInterval(timerInterval);
+      setMsg("Disconnected. Refresh to reconnect.");
     };
 
-    ws.onerror = () => setMsg("bad", "Connection error. Try refreshing.");
+    ws.onerror = () => setMsg("Connection error. Try refreshing.");
   }
 
   // UI actions
@@ -383,7 +356,7 @@ function wsUrlFromLocation() {
     if (!nm) return;
     localStorage.setItem("ib_name", nm);
     send({ type:"set_name", name: nm });
-    setMsg("good", "Name saved.");
+    setMsg("Name saved.");
   });
 
   betBtn.addEventListener("click", () => {
@@ -400,12 +373,6 @@ function wsUrlFromLocation() {
   nameEl.value = localStorage.getItem("ib_name") || "Novemm";
   connect();
 })();
-<script>
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/service-worker.js").catch(() => {});
-    });
-  }
 </script>
 </body>
 </html>
