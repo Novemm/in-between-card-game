@@ -1,8 +1,11 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const WebSocket = require("ws");
 const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
+const INDEX_PATH = path.join(__dirname, "index.html");
 
 // ---- Card setup ----
 const SUITS = [
@@ -34,7 +37,7 @@ function shuffle(a) {
 
 // ---- Game state (single shared lobby) ----
 const STARTING_CHIPS = 1000;
-const ROUND_TIME_MS = 15000; // auto-reveal after betting window
+const ROUND_TIME_MS = 15000;
 const PAIR_MULT = 11;
 
 const state = {
@@ -44,9 +47,9 @@ const state = {
   card1: null,
   card2: null,
   card3: null,
-  betDeadline: null, // unix ms
-  players: new Map(), // id -> {id,name,chips,bet,connected,lastDelta}
-  lastRound: null,    // { outcomes: {id:{bet,delta,win}} }
+  betDeadline: null,
+  players: new Map(),
+  lastRound: null,
   config: { pairRule: true }
 };
 
@@ -59,7 +62,6 @@ function drawCard() {
   ensureDeck(1);
   return state.deck.pop();
 }
-
 function publicState() {
   return {
     hostId: state.hostId,
@@ -81,11 +83,9 @@ function publicState() {
     lastRound: state.lastRound
   };
 }
-
 function send(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
-
 function broadcast() {
   for (const [id, p] of state.players.entries()) {
     if (p.ws && p.ws.readyState === WebSocket.OPEN) {
@@ -93,14 +93,15 @@ function broadcast() {
     }
   }
 }
-
 function setHostIfNeeded() {
   if (state.hostId && state.players.has(state.hostId) && state.players.get(state.hostId).connected) return;
-  // pick first connected player
   for (const p of state.players.values()) {
     if (p.connected) { state.hostId = p.id; return; }
   }
   state.hostId = null;
+}
+function isHost(id) {
+  return state.hostId && id === state.hostId;
 }
 
 function newHand() {
@@ -112,16 +113,13 @@ function newHand() {
   state.betDeadline = Date.now() + ROUND_TIME_MS;
   state.lastRound = null;
 
-  // clear bets/deltas
   for (const p of state.players.values()) {
     p.bet = 0;
     p.lastDelta = 0;
   }
 
-  // schedule auto reveal
   if (revealTimer) clearTimeout(revealTimer);
   revealTimer = setTimeout(() => {
-    // if still in betting, reveal
     if (state.phase === "betting") reveal();
   }, ROUND_TIME_MS + 50);
 }
@@ -145,55 +143,61 @@ function reveal() {
   for (const p of state.players.values()) {
     let bet = Math.floor(Number(p.bet || 0));
     if (!Number.isFinite(bet) || bet < 0) bet = 0;
-    if (bet > p.chips) bet = p.chips; // clamp to chips
+    if (bet > p.chips) bet = p.chips;
 
     let delta = 0;
     let win = false;
 
     if (bet === 0) {
-      delta = 0; win = false;
+      delta = 0;
     } else if (isPair) {
       if (!state.config.pairRule) {
-        win = false;
         delta = -bet;
       } else {
         win = (v3 === v1);
         delta = win ? bet * PAIR_MULT : -bet;
       }
     } else {
-      // classic strict-between
       win = (v3 > lo && v3 < hi);
       delta = win ? bet : -bet;
     }
 
-    p.chips += delta;
-    if (p.chips < 0) p.chips = 0;
+    p.chips = Math.max(0, p.chips + delta);
     p.lastDelta = delta;
-
     outcomes[p.id] = { bet, delta, win };
   }
 
   state.lastRound = { outcomes };
 }
 
-function isHost(id) {
-  return state.hostId && id === state.hostId;
-}
-
-// ---- HTTP server for Render health checks ----
+// ---- HTTP server: SERVE THE UI ----
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("ok");
     return;
   }
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("In-Between multiplayer server running.");
+
+  if (req.url === "/" || req.url.startsWith("/?")) {
+    fs.readFile(INDEX_PATH, (err, data) => {
+      if (err) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("index.html not found in repo root.");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(data);
+    });
+    return;
+  }
+
+  res.writeHead(404, { "Content-Type": "text/plain" });
+  res.end("Not found");
 });
 
+// ---- WebSocket server ----
 const wss = new WebSocket.Server({ server });
 
-// ---- WebSocket handling ----
 wss.on("connection", (ws) => {
   const id = crypto.randomUUID();
 
@@ -211,7 +215,6 @@ wss.on("connection", (ws) => {
   if (!state.hostId) state.hostId = id;
   setHostIfNeeded();
 
-  // send welcome + full state
   send(ws, { type: "welcome", you: id });
   broadcast();
 
@@ -248,7 +251,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "host_new_hand") {
       if (!isHost(id)) return;
-      if (state.phase === "betting") return; // don't interrupt
+      if (state.phase === "betting") return;
       newHand();
       broadcast();
       return;
@@ -262,15 +265,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    if (msg.type === "toggle_pair_rule") {
-      if (!isHost(id)) return;
-      state.config.pairRule = !!msg.value;
-      broadcast();
-      return;
-    }
-
     if (msg.type === "reset_me") {
-      // each player can reset themselves (play-money)
       p.chips = STARTING_CHIPS;
       p.bet = 0;
       p.lastDelta = 0;
@@ -281,15 +276,10 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     const p = state.players.get(id);
-    if (p) {
-      p.connected = false;
-      p.ws = null;
-    }
+    if (p) { p.connected = false; p.ws = null; }
     setHostIfNeeded();
     broadcast();
   });
 });
 
-server.listen(PORT, () => {
-  console.log("Server listening on", PORT);
-});
+server.listen(PORT, () => console.log("Server listening on", PORT));
