@@ -243,10 +243,10 @@
     msgEl.textContent = text;
   }
 
-  function wsUrlFromLocation(){
-    const proto = (location.protocol === "https:") ? "wss:" : "ws:";
-    return proto + "//" + location.host;
-  }
+ const SERVER_HTTP = "https://in-between-card-game-agzb.onrender.com";
+function wsUrlFromLocation(){
+  return SERVER_HTTP.replace(/^http/, "ws"); // https -> wss
+}
 
   function send(obj){
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
