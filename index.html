@@ -106,6 +106,7 @@
     .pip.bottom{ top:auto; left:auto; right:12px; bottom:12px; transform: rotate(180deg); }
     .centerSuit{ font-size: 56px; font-weight: 1000; color:#151525; }
     .tiny{ font-size: 11px; color: rgba(255,255,255,.6); line-height: 1.35; }
+
     .list{ display:grid; gap:8px; padding:12px; border:1px solid var(--stroke); border-radius:16px; background: rgba(255,255,255,.05); }
     .playerRow{
       display:flex; justify-content:space-between; gap:10px; align-items:center;
@@ -149,7 +150,7 @@
   <header>
     <div>
       <div class="title">In-Between Multiplayer (Manual)</div>
-      <div class="sub">Host controls deal & reveal • Winners announced with fireworks • Pot grows only on no-winner rounds</div>
+      <div class="sub">Host deals & reveals • Win = +bet, Lose = -bet • Pot grows when nobody wins • Voice prompt on new hand</div>
     </div>
     <div class="pill">
       Status: <b id="status">Connecting…</b>
@@ -157,6 +158,7 @@
       Deck: <b id="deckCount">—</b>
       <span style="opacity:.55">|</span>
       Pot: <b id="potOut">0</b>
+      <button class="btn secondary" id="voiceBtn" style="padding:7px 10px; border-radius:999px;">🔊 Voice: On</button>
     </div>
   </header>
 
@@ -220,7 +222,7 @@
           </div>
           <div class="row" style="min-width:320px;">
             <div>
-              <div class="tiny">Your bet</div>
+              <div class="tiny">Your bet (0 = sit out)</div>
               <input id="bet" type="number" min="0" step="1" value="10" disabled/>
             </div>
             <button class="btn" id="betBtn" disabled>Place/Update Bet</button>
@@ -230,8 +232,7 @@
 
         <div style="height:8px"></div>
         <div class="tiny">
-          Payout: if you win, you gain exactly your bet (+bet). If you lose, you pay your bet (-bet). All-in works automatically.
-          If the first two cards are a pair, you only win if the 3rd card matches.
+          If Card 1 and Card 2 are a pair, you only win if Card 3 matches.
         </div>
       </div>
     </section>
@@ -276,6 +277,8 @@
   const playersList = el("playersList");
   const hostNameEl = el("hostName");
 
+  const voiceBtn = el("voiceBtn");
+
   const c1 = el("c1"), c2 = el("c2"), c3 = el("c3");
   const c1f = el("c1f"), c2f = el("c2f"), c3f = el("c3f");
 
@@ -283,7 +286,35 @@
 
   let ws = null;
   let you = null;
-  let lastCelebratedRound = null;
+
+  // Fireworks/voice should trigger once per round
+  let lastCelebratedRoundId = null;
+  let lastSpokenRoundId = null;
+
+  // Voice toggle (note: browsers often require a user click to allow speech)
+  let voiceEnabled = (localStorage.getItem("ib_voice") || "on") === "on";
+  function setVoiceButton() {
+    voiceBtn.textContent = voiceEnabled ? "🔊 Voice: On" : "🔇 Voice: Off";
+  }
+  setVoiceButton();
+
+  function speak(text) {
+    if (!voiceEnabled) return;
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = 1;
+    u.pitch = 1;
+    window.speechSynthesis.speak(u);
+  }
+
+  voiceBtn.addEventListener("click", () => {
+    voiceEnabled = !voiceEnabled;
+    localStorage.setItem("ib_voice", voiceEnabled ? "on" : "off");
+    setVoiceButton();
+    if (voiceEnabled) speak("Voice enabled"); // unlock on mobile after tap
+  });
 
   function setMsg(kind, text){
     msgEl.classList.remove("good","bad","warn");
@@ -315,7 +346,6 @@
   function flip(cardEl, up){ cardEl.classList.toggle("isUp", !!up); }
 
   function celebrate(){
-    // quick confetti burst
     fx.innerHTML = "";
     const pieces = 90;
     for (let i = 0; i < pieces; i++) {
@@ -335,6 +365,12 @@
     setTimeout(() => { fx.innerHTML = ""; }, 2600);
   }
 
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+  }
+
   function renderSummary(state){
     const lr = state.lastRound;
     if (!lr || state.phase !== "revealed") {
@@ -352,11 +388,8 @@
     lines.push(`<div class="summaryTitle">Round #${lr.roundId} result</div>`);
 
     if (winners.length > 0) {
-      const winText = winners
-        .map(w => `${escapeHtml(w.name)} <span class="winLine">+${w.amount}</span>`)
-        .join("<br/>");
       lines.push(`<div class="chipsLine">Winners:</div>`);
-      lines.push(`<div>${winText}</div>`);
+      lines.push(`<div>${winners.map(w => `${escapeHtml(w.name)} <span class="winLine">+${w.amount}</span>`).join("<br/>")}</div>`);
       lines.push(`<div class="potLine">Pot reset: ${pot}</div>`);
     } else {
       lines.push(`<div class="loseLine">No winners this round.</div>`);
@@ -364,12 +397,6 @@
     }
 
     summaryEl.innerHTML = lines.join("");
-  }
-
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-    }[c]));
   }
 
   function render(state){
@@ -401,13 +428,20 @@
     hostNewHandBtn.disabled = !(isHost && state.phase !== "betting");
     hostRevealBtn.disabled = !(isHost && state.phase === "betting");
 
-    // Summary + fireworks once per round
+    // Voice prompt once when new hand starts (betting phase + new roundId)
+    if (state.phase === "betting" && state.roundId && state.roundId !== lastSpokenRoundId) {
+      lastSpokenRoundId = state.roundId;
+      speak("Add a bet");
+    }
+
+    // Summary + fireworks once per round if there is a winner
     renderSummary(state);
     if (state.phase === "revealed" && state.lastRound?.roundId) {
       const rid = state.lastRound.roundId;
       const hasWinners = (state.lastRound.winners || []).length > 0;
-      if (hasWinners && lastCelebratedRound !== rid) {
-        lastCelebratedRound = rid;
+
+      if (hasWinners && lastCelebratedRoundId !== rid) {
+        lastCelebratedRoundId = rid;
         celebrate();
         setMsg("good", "We have winner(s)!");
       } else if (!hasWinners) {
