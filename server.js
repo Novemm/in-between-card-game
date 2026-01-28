@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const PORT = process.env.PORT || 3000;
 const INDEX_PATH = path.join(__dirname, "index.html");
 
-// ---- Card setup ----
+// ---- Cards ----
 const SUITS = [
   { s: "♠", color: "#1a1a1a" },
   { s: "♥", color: "#d1223b" },
@@ -37,7 +37,6 @@ function shuffle(a) {
 
 // ---- Game state (single shared lobby) ----
 const STARTING_CHIPS = 1000;
-const PAIR_MULT = 11;
 
 const state = {
   hostId: null,
@@ -46,9 +45,12 @@ const state = {
   card1: null,
   card2: null,
   card3: null,
+
+  roundId: 0,      // increments each New Hand
+  pot: 0,          // accumulates only when NO ONE wins in a revealed round
+
   players: new Map(), // id -> {id,name,chips,bet,connected,lastDelta,ws}
-  lastRound: null,
-  config: { pairRule: true }
+  lastRound: null     // {roundId,totalBets,winners:[{id,name,amount}], outcomes:{id:{bet,delta,win}}}
 };
 
 function ensureDeck(n = 3) {
@@ -66,7 +68,8 @@ function publicState() {
     card1: state.card1,
     card2: state.card2,
     card3: state.card3,
-    config: state.config,
+    roundId: state.roundId,
+    pot: state.pot,
     players: Array.from(state.players.values()).map(p => ({
       id: p.id,
       name: p.name,
@@ -101,6 +104,8 @@ function isHost(id) {
 
 function newHand() {
   ensureDeck(3);
+
+  state.roundId += 1;
   state.card1 = drawCard();
   state.card2 = drawCard();
   state.card3 = null;
@@ -120,6 +125,8 @@ function reveal() {
   state.phase = "revealed";
 
   const outcomes = {};
+  const winners = [];
+
   const v1 = state.card1.value;
   const v2 = state.card2.value;
   const v3 = state.card3.value;
@@ -128,34 +135,52 @@ function reveal() {
   const lo = Math.min(v1, v2);
   const hi = Math.max(v1, v2);
 
+  let totalBets = 0;
+  let winnerCount = 0;
+
   for (const p of state.players.values()) {
     let bet = Math.floor(Number(p.bet || 0));
     if (!Number.isFinite(bet) || bet < 0) bet = 0;
     if (bet > p.chips) bet = p.chips;
+    totalBets += bet;
 
-    let delta = 0;
     let win = false;
 
-    if (bet === 0) {
-      delta = 0;
-    } else if (isPair) {
-      if (!state.config.pairRule) {
-        delta = -bet;
-      } else {
+    if (bet > 0) {
+      if (isPair) {
+        // simple: if pair, you ONLY win if 3rd matches (still pays +bet)
         win = (v3 === v1);
-        delta = win ? bet * PAIR_MULT : -bet;
+      } else {
+        win = (v3 > lo && v3 < hi);
       }
-    } else {
-      win = (v3 > lo && v3 < hi);
-      delta = win ? bet : -bet;
     }
+
+    const delta = bet === 0 ? 0 : (win ? bet : -bet);
 
     p.chips = Math.max(0, p.chips + delta);
     p.lastDelta = delta;
+
     outcomes[p.id] = { bet, delta, win };
+
+    if (delta > 0) {
+      winnerCount += 1;
+      winners.push({ id: p.id, name: p.name, amount: delta });
+    }
   }
 
-  state.lastRound = { outcomes };
+  // Pot behavior:
+  // If NO ONE wins, the pot grows by total bets placed that round.
+  // If someone wins, pot resets to 0.
+  if (winnerCount === 0) state.pot += totalBets;
+  else state.pot = 0;
+
+  state.lastRound = {
+    roundId: state.roundId,
+    totalBets,
+    winners,
+    outcomes,
+    potAfter: state.pot
+  };
 }
 
 // ---- HTTP server: serve UI ----
@@ -239,7 +264,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "host_new_hand") {
       if (!isHost(id)) return;
-      if (state.phase === "betting") return; // keep manual fairness: don't wipe bets mid-round
+      if (state.phase === "betting") return; // don’t wipe bets mid-round
       newHand();
       broadcast();
       return;
