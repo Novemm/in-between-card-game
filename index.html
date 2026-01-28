@@ -1,6 +1,9 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0b1220">
+<link rel="apple-touch-icon" href="/icon-192.png">
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>In-Between Multiplayer</title>
@@ -397,6 +400,12 @@ function wsUrlFromLocation(){
   nameEl.value = localStorage.getItem("ib_name") || "Novemm";
   connect();
 })();
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+    });
+  }
 </script>
 </body>
 </html>
