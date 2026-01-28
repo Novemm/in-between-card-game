@@ -35,9 +35,12 @@ function shuffle(a) {
   return a;
 }
 
-// ---- Game state (single shared lobby) ----
+// ---- Game rules ----
+// Win => +bet, Lose => -bet (your requested behavior)
+// Special case: if first 2 cards are pair, win only if 3rd matches.
 const STARTING_CHIPS = 1000;
 
+// ---- Global state (single shared table) ----
 const state = {
   hostId: null,
   phase: "idle", // idle | betting | revealed
@@ -46,11 +49,11 @@ const state = {
   card2: null,
   card3: null,
 
-  roundId: 0,      // increments each New Hand
-  pot: 0,          // accumulates only when NO ONE wins in a revealed round
+  roundId: 0,
+  pot: 0, // grows only when no winners in a round
 
-  players: new Map(), // id -> {id,name,chips,bet,connected,lastDelta,ws}
-  lastRound: null     // {roundId,totalBets,winners:[{id,name,amount}], outcomes:{id:{bet,delta,win}}}
+  players: new Map(), // id -> player
+  lastRound: null      // summary object for UI
 };
 
 function ensureDeck(n = 3) {
@@ -60,6 +63,7 @@ function drawCard() {
   ensureDeck(1);
   return state.deck.pop();
 }
+
 function publicState() {
   return {
     hostId: state.hostId,
@@ -81,6 +85,7 @@ function publicState() {
     lastRound: state.lastRound
   };
 }
+
 function send(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
@@ -91,6 +96,7 @@ function broadcast() {
     }
   }
 }
+
 function setHostIfNeeded() {
   if (state.hostId && state.players.has(state.hostId) && state.players.get(state.hostId).connected) return;
   for (const p of state.players.values()) {
@@ -139,22 +145,20 @@ function reveal() {
   let winnerCount = 0;
 
   for (const p of state.players.values()) {
+    // clamp bet to [0, chips]
     let bet = Math.floor(Number(p.bet || 0));
     if (!Number.isFinite(bet) || bet < 0) bet = 0;
     if (bet > p.chips) bet = p.chips;
     totalBets += bet;
 
     let win = false;
-
     if (bet > 0) {
-      if (isPair) {
-        // simple: if pair, you ONLY win if 3rd matches (still pays +bet)
-        win = (v3 === v1);
-      } else {
-        win = (v3 > lo && v3 < hi);
-      }
+      if (isPair) win = (v3 === v1);
+      else win = (v3 > lo && v3 < hi);
     }
 
+    // Your requested payoff:
+    // win => +bet, lose => -bet
     const delta = bet === 0 ? 0 : (win ? bet : -bet);
 
     p.chips = Math.max(0, p.chips + delta);
@@ -168,9 +172,9 @@ function reveal() {
     }
   }
 
-  // Pot behavior:
-  // If NO ONE wins, the pot grows by total bets placed that round.
-  // If someone wins, pot resets to 0.
+  // Pot rules:
+  // - If nobody wins: pot += total bets that round
+  // - If at least one winner: pot resets to 0
   if (winnerCount === 0) state.pot += totalBets;
   else state.pot = 0;
 
@@ -183,7 +187,7 @@ function reveal() {
   };
 }
 
-// ---- HTTP server: serve UI ----
+// ---- HTTP server: serves UI at / ----
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -223,8 +227,8 @@ wss.on("connection", (ws) => {
     lastDelta: 0,
     ws
   };
-  state.players.set(id, player);
 
+  state.players.set(id, player);
   if (!state.hostId) state.hostId = id;
   setHostIfNeeded();
 
@@ -264,7 +268,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "host_new_hand") {
       if (!isHost(id)) return;
-      if (state.phase === "betting") return; // don’t wipe bets mid-round
+      if (state.phase === "betting") return; // avoid wiping bets mid-round
       newHand();
       broadcast();
       return;
