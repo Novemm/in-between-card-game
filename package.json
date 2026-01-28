@@ -1,5 +1,5 @@
 {
-  "name": "in-between-multiplayer",
+  "name": "in-between-card-game",
   "version": "1.0.0",
   "private": true,
   "main": "server.js",
