@@ -8,6 +8,7 @@
     :root{
       --bg0:#0b1220; --panel: rgba(255,255,255,.06); --stroke: rgba(255,255,255,.14);
       --text: rgba(255,255,255,.92); --muted: rgba(255,255,255,.65);
+      --good:#5CFF9D; --bad:#FF5C7A; --warn:#FFD66B;
       --btn:#1b2a4b; --btn2:#24365f; --card:#f7f7fb; --cardStroke:#d8d8e6;
       --shadow: 0 18px 55px rgba(0,0,0,.55);
     }
@@ -67,6 +68,24 @@
       background: rgba(255,255,255,.05); min-height: 54px;
       display:flex; align-items:center; gap: 10px; font-weight: 900; letter-spacing: .1px;
     }
+    .msg.good{ border-color: rgba(92,255,157,.35); }
+    .msg.bad{ border-color: rgba(255,92,122,.35); }
+    .msg.warn{ border-color: rgba(255,214,107,.35); }
+
+    .summary{
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(0,0,0,.18);
+      display:grid;
+      gap: 8px;
+    }
+    .summaryTitle{ font-weight:1000; letter-spacing:.2px; }
+    .chipsLine{ color: rgba(255,255,255,.75); font-size:12px; }
+    .winLine{ color: var(--good); font-weight: 1000; }
+    .loseLine{ color: var(--bad); font-weight: 1000; }
+    .potLine{ color: var(--warn); font-weight: 1000; }
+
     .cardsRow{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items:center; }
     .slot{ display:grid; justify-items:center; gap:8px; }
     .slotLabel{ color: rgba(255,255,255,.6); font-size: 12px; }
@@ -94,21 +113,50 @@
       background: rgba(0,0,0,.15); font-size: 12px;
     }
     .playerRow.me{ border-color: rgba(255,214,107,.35); }
+    .playerRow.winner{ border-color: rgba(92,255,157,.35); }
     .badge{ font-size: 10px; font-weight: 1000; padding: 2px 8px; border-radius: 999px;
       border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.06); color: rgba(255,255,255,.75); }
+
+    /* Fireworks/confetti overlay */
+    #fx {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 9999;
+    }
+    .confetti {
+      position: absolute;
+      top: -10px;
+      width: 10px;
+      height: 18px;
+      border-radius: 3px;
+      opacity: 0.95;
+      transform: rotate(var(--rot));
+      left: var(--x);
+      animation: fall var(--dur) linear var(--delay) forwards;
+      filter: drop-shadow(0 6px 8px rgba(0,0,0,.25));
+    }
+    @keyframes fall {
+      to { transform: translateY(110vh) rotate(calc(var(--rot) + 360deg)); opacity: 0.8; }
+    }
   </style>
 </head>
 <body>
+<div id="fx"></div>
+
 <div class="wrap">
   <header>
     <div>
       <div class="title">In-Between Multiplayer (Manual)</div>
-      <div class="sub">No timer • Host controls when to deal & reveal</div>
+      <div class="sub">Host controls deal & reveal • Winners announced with fireworks • Pot grows only on no-winner rounds</div>
     </div>
     <div class="pill">
       Status: <b id="status">Connecting…</b>
       <span style="opacity:.55">|</span>
       Deck: <b id="deckCount">—</b>
+      <span style="opacity:.55">|</span>
+      Pot: <b id="potOut">0</b>
     </div>
   </header>
 
@@ -117,11 +165,9 @@
       <div class="hd">
         <div class="left">
           <div class="kicker">TABLE</div>
-          <div class="big">Host deals → everyone bets → host reveals</div>
+          <div class="big">Host: New Hand → everyone bets → Host: Reveal</div>
         </div>
         <div class="pill">
-          Pair rule: <b id="pairRuleOut">—</b>
-          <span style="opacity:.55">|</span>
           Your chips: <b id="myChips">—</b>
         </div>
       </div>
@@ -149,7 +195,11 @@
         </div>
 
         <div style="height:12px"></div>
-        <div class="msg" id="msg">Connecting…</div>
+        <div class="msg warn" id="msg">Connecting…</div>
+
+        <div style="height:12px"></div>
+        <div class="summary" id="summary" style="display:none;"></div>
+
         <div style="height:12px"></div>
 
         <div class="row">
@@ -170,17 +220,18 @@
           </div>
           <div class="row" style="min-width:320px;">
             <div>
-              <div class="tiny">Your bet (0 = sit out)</div>
+              <div class="tiny">Your bet</div>
               <input id="bet" type="number" min="0" step="1" value="10" disabled/>
             </div>
-            <button class="btn" id="betBtn" disabled>Place Bet</button>
+            <button class="btn" id="betBtn" disabled>Place/Update Bet</button>
             <button class="btn secondary" id="sitOutBtn" disabled>Sit Out</button>
           </div>
         </div>
 
         <div style="height:8px"></div>
         <div class="tiny">
-          Rule: 3rd card must be <b>strictly between</b> the first two. Pair pays 11× if enabled.
+          Payout: if you win, you gain exactly your bet (+bet). If you lose, you pay your bet (-bet). All-in works automatically.
+          If the first two cards are a pair, you only win if the 3rd card matches.
         </div>
       </div>
     </section>
@@ -206,7 +257,9 @@
 
   const statusEl = el("status");
   const deckEl = el("deckCount");
+  const potOutEl = el("potOut");
   const msgEl = el("msg");
+  const summaryEl = el("summary");
 
   const nameEl = el("name");
   const saveNameBtn = el("saveName");
@@ -220,17 +273,23 @@
   const sitOutBtn = el("sitOutBtn");
 
   const myChipsEl = el("myChips");
-  const pairRuleOut = el("pairRuleOut");
   const playersList = el("playersList");
   const hostNameEl = el("hostName");
 
   const c1 = el("c1"), c2 = el("c2"), c3 = el("c3");
   const c1f = el("c1f"), c2f = el("c2f"), c3f = el("c3f");
 
+  const fx = el("fx");
+
   let ws = null;
   let you = null;
+  let lastCelebratedRound = null;
 
-  function setMsg(text){ msgEl.textContent = text; }
+  function setMsg(kind, text){
+    msgEl.classList.remove("good","bad","warn");
+    msgEl.classList.add(kind);
+    msgEl.textContent = text;
+  }
 
   function wsUrlFromLocation(){
     const proto = (location.protocol === "https:") ? "wss:" : "ws:";
@@ -255,10 +314,68 @@
   }
   function flip(cardEl, up){ cardEl.classList.toggle("isUp", !!up); }
 
+  function celebrate(){
+    // quick confetti burst
+    fx.innerHTML = "";
+    const pieces = 90;
+    for (let i = 0; i < pieces; i++) {
+      const d = document.createElement("div");
+      d.className = "confetti";
+      const x = Math.random() * 100;
+      const dur = 1.3 + Math.random() * 1.2;
+      const delay = Math.random() * 0.25;
+      const rot = (Math.random() * 360) + "deg";
+      d.style.setProperty("--x", x + "vw");
+      d.style.setProperty("--dur", dur + "s");
+      d.style.setProperty("--delay", delay + "s");
+      d.style.setProperty("--rot", rot);
+      d.style.background = `hsl(${Math.floor(Math.random()*360)}, 90%, 60%)`;
+      fx.appendChild(d);
+    }
+    setTimeout(() => { fx.innerHTML = ""; }, 2600);
+  }
+
+  function renderSummary(state){
+    const lr = state.lastRound;
+    if (!lr || state.phase !== "revealed") {
+      summaryEl.style.display = "none";
+      summaryEl.innerHTML = "";
+      return;
+    }
+
+    summaryEl.style.display = "grid";
+
+    const winners = lr.winners || [];
+    const pot = state.pot ?? 0;
+
+    const lines = [];
+    lines.push(`<div class="summaryTitle">Round #${lr.roundId} result</div>`);
+
+    if (winners.length > 0) {
+      const winText = winners
+        .map(w => `${escapeHtml(w.name)} <span class="winLine">+${w.amount}</span>`)
+        .join("<br/>");
+      lines.push(`<div class="chipsLine">Winners:</div>`);
+      lines.push(`<div>${winText}</div>`);
+      lines.push(`<div class="potLine">Pot reset: ${pot}</div>`);
+    } else {
+      lines.push(`<div class="loseLine">No winners this round.</div>`);
+      lines.push(`<div class="potLine">Pot increased to: ${pot}</div>`);
+    }
+
+    summaryEl.innerHTML = lines.join("");
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+  }
+
   function render(state){
     statusEl.textContent = "Connected";
     deckEl.textContent = String(state.deckCount ?? "—");
-    pairRuleOut.textContent = state.config?.pairRule ? "ON" : "OFF";
+    potOutEl.textContent = String(state.pot ?? 0);
 
     renderCard(c1f, state.card1);
     renderCard(c2f, state.card2);
@@ -284,10 +401,30 @@
     hostNewHandBtn.disabled = !(isHost && state.phase !== "betting");
     hostRevealBtn.disabled = !(isHost && state.phase === "betting");
 
+    // Summary + fireworks once per round
+    renderSummary(state);
+    if (state.phase === "revealed" && state.lastRound?.roundId) {
+      const rid = state.lastRound.roundId;
+      const hasWinners = (state.lastRound.winners || []).length > 0;
+      if (hasWinners && lastCelebratedRound !== rid) {
+        lastCelebratedRound = rid;
+        celebrate();
+        setMsg("good", "We have winner(s)!");
+      } else if (!hasWinners) {
+        setMsg("warn", "No winners — pot increased.");
+      }
+    } else if (state.phase === "idle") {
+      setMsg("warn", "Waiting for host to start a new hand.");
+    } else if (state.phase === "betting") {
+      setMsg("warn", "Betting is open. Place/update your bet until host reveals.");
+    }
+
+    // Players list (highlight winners)
+    const winnerIds = new Set((state.lastRound?.winners || []).map(w => w.id));
     playersList.innerHTML = "";
     (state.players || []).forEach(p => {
       const row = document.createElement("div");
-      row.className = "playerRow" + (p.id === you ? " me" : "");
+      row.className = "playerRow" + (p.id === you ? " me" : "") + (winnerIds.has(p.id) ? " winner" : "");
 
       const left = document.createElement("div");
       left.style.display = "flex";
@@ -308,20 +445,20 @@
       right.style.display = "flex";
       right.style.gap = "10px";
       right.style.alignItems = "center";
-      right.innerHTML = `<span>Chips: <b>${p.chips}</b></span><span>Bet: <b>${p.bet}</b></span><span style="opacity:.75">Δ ${p.lastDelta>=0?"+":""}${p.lastDelta}</span>`;
+
+      const delta = Number(p.lastDelta || 0);
+      const deltaStr = `${delta >= 0 ? "+" : ""}${delta}`;
+
+      right.innerHTML = `<span>Chips: <b>${p.chips}</b></span><span>Bet: <b>${p.bet}</b></span><span style="opacity:.75">Δ ${deltaStr}</span>`;
 
       row.appendChild(left);
       row.appendChild(right);
       playersList.appendChild(row);
     });
-
-    if (state.phase === "idle") setMsg("Waiting for host to start a new hand.");
-    else if (state.phase === "betting") setMsg("Betting is open. Place/change your bet until host reveals.");
-    else setMsg("Round revealed. Host can start the next hand.");
   }
 
   function connect(){
-    setMsg("Connecting…");
+    setMsg("warn", "Connecting…");
     statusEl.textContent = "Connecting…";
 
     try { if (ws) ws.close(); } catch {}
@@ -330,7 +467,7 @@
 
     ws.onopen = () => {
       statusEl.textContent = "Connected";
-      setMsg("Connected. Syncing…");
+      setMsg("good", "Connected. Syncing…");
       const nm = (localStorage.getItem("ib_name") || nameEl.value || "Novemm").trim().slice(0,18);
       if (nm) send({ type:"set_name", name: nm });
     };
@@ -344,10 +481,10 @@
 
     ws.onclose = () => {
       statusEl.textContent = "Disconnected";
-      setMsg("Disconnected. Refresh to reconnect.");
+      setMsg("bad", "Disconnected. Refresh to reconnect.");
     };
 
-    ws.onerror = () => setMsg("Connection error. Try refreshing.");
+    ws.onerror = () => setMsg("bad", "Connection error. Try refreshing.");
   }
 
   // UI actions
@@ -356,7 +493,7 @@
     if (!nm) return;
     localStorage.setItem("ib_name", nm);
     send({ type:"set_name", name: nm });
-    setMsg("Name saved.");
+    setMsg("good", "Name saved.");
   });
 
   betBtn.addEventListener("click", () => {
